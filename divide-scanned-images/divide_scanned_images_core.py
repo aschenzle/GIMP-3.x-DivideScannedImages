@@ -320,6 +320,308 @@ def extract_crop_rgba(
     return bytes(output), out_width, out_height
 
 
+def foreground_bbox(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    background: Sequence[int],
+    threshold: int,
+) -> Optional[BBox]:
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    if len(rgba) < width * height * 4:
+        raise ValueError("rgba buffer is smaller than width * height * 4")
+
+    bg = normalize_rgba(background)
+    min_x = width
+    min_y = height
+    max_x = -1
+    max_y = -1
+
+    for y in range(height):
+        row = y * width * 4
+        for x in range(width):
+            i = row + x * 4
+            if _is_foreground((rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]), bg, threshold):
+                if x < min_x:
+                    min_x = x
+                if y < min_y:
+                    min_y = y
+                if x > max_x:
+                    max_x = x
+                if y > max_y:
+                    max_y = y
+
+    if max_x < min_x or max_y < min_y:
+        return None
+    return (min_x, min_y, max_x + 1, max_y + 1)
+
+
+def crop_whitespace_rgba(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    background: Sequence[int],
+    threshold: int,
+    padding: int = 0,
+) -> Tuple[bytes, int, int]:
+    bbox = foreground_bbox(rgba, width, height, background, threshold)
+    if bbox is None:
+        return bytes(rgba), width, height
+
+    padding = max(0, int(padding))
+    x0, y0, x1, y1 = bbox
+    rect = (
+        clamp(x0 - padding, 0, width),
+        clamp(y0 - padding, 0, height),
+        clamp(x1 + padding, 0, width),
+        clamp(y1 + padding, 0, height),
+    )
+    return extract_crop_rgba(rgba, width, height, rect, background)
+
+
+def estimate_deskew_angle(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    background: Sequence[int],
+    threshold: int,
+    max_angle: float = 15.0,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> float:
+    """Estimate a small deskew correction in degrees.
+
+    The estimator samples foreground points and searches for the rotation that
+    minimizes their axis-aligned bounding-box area. This targets the footprint
+    of the detected photo instead of the dominant visual content inside it.
+    """
+
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    if len(rgba) < width * height * 4:
+        raise ValueError("rgba buffer is smaller than width * height * 4")
+
+    bg = normalize_rgba(background)
+    max_points = 6000
+    stride = max(1, int(math.sqrt((width * height) / max_points)))
+    points = []
+    update_step = max(stride, height // 20)
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+
+    for y in range(0, height, stride):
+        row = y * width * 4
+        for x in range(0, width, stride):
+            i = row + x * 4
+            if _is_foreground((rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]), bg, threshold):
+                points.append((x - center_x, y - center_y))
+        if progress_callback is not None and y % update_step == 0:
+            progress_callback(0.5 * (y / max(1, height)), "Sampling foreground for deskew...")
+
+    if len(points) < 8:
+        return 0.0
+
+    max_angle = abs(float(max_angle))
+    if max_angle < 0.1:
+        return 0.0
+
+    def score(angle: float) -> float:
+        radians = math.radians(angle)
+        cos_a = math.cos(radians)
+        sin_a = math.sin(radians)
+        min_x = float("inf")
+        min_y = float("inf")
+        max_x = float("-inf")
+        max_y = float("-inf")
+        for px, py in points:
+            rx = px * cos_a + py * sin_a
+            ry = -px * sin_a + py * cos_a
+            if rx < min_x:
+                min_x = rx
+            if rx > max_x:
+                max_x = rx
+            if ry < min_y:
+                min_y = ry
+            if ry > max_y:
+                max_y = ry
+        bbox_width = max_x - min_x
+        bbox_height = max_y - min_y
+        return bbox_width * bbox_height
+
+    base_score = score(0.0)
+    best_angle = 0.0
+    best_score = base_score
+    coarse_step = 1.0
+    coarse_steps = int(round((max_angle * 2.0) / coarse_step)) + 1
+    start = -max_angle
+    for index in range(coarse_steps):
+        angle = start + index * coarse_step
+        current_score = score(angle)
+        if current_score < best_score:
+            best_score = current_score
+            best_angle = angle
+        if progress_callback is not None and index % 4 == 0:
+            progress_callback(0.5 + 0.25 * (index / max(1, coarse_steps - 1)), "Searching deskew angle...")
+
+    refine_start = max(-max_angle, best_angle - 1.0)
+    refine_end = min(max_angle, best_angle + 1.0)
+    refine_count = int(round((refine_end - refine_start) / 0.1)) + 1
+    for index in range(refine_count):
+        angle = refine_start + index * 0.1
+        current_score = score(angle)
+        if current_score < best_score:
+            best_score = current_score
+            best_angle = angle
+        if progress_callback is not None and index % 4 == 0:
+            progress_callback(0.75 + 0.25 * (index / max(1, refine_count - 1)), "Refining deskew angle...")
+
+    improvement = (base_score - best_score) / max(1.0, base_score)
+    if improvement < 0.0025 or abs(best_angle) < 0.2:
+        return 0.0
+    return best_angle
+
+
+def _blend_channel(a: int, b: int, t: float) -> float:
+    return a * (1.0 - t) + b * t
+
+
+def _sample_bilinear(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    x: float,
+    y: float,
+    fill: RGBA,
+) -> RGBA:
+    if x < 0.0 or y < 0.0 or x > width - 1 or y > height - 1:
+        return fill
+
+    x0 = int(math.floor(x))
+    y0 = int(math.floor(y))
+    x1 = min(x0 + 1, width - 1)
+    y1 = min(y0 + 1, height - 1)
+    tx = x - x0
+    ty = y - y0
+
+    p00 = _pixel_at(rgba, width, x0, y0)
+    p10 = _pixel_at(rgba, width, x1, y0)
+    p01 = _pixel_at(rgba, width, x0, y1)
+    p11 = _pixel_at(rgba, width, x1, y1)
+
+    result = []
+    for channel in range(4):
+        top = _blend_channel(p00[channel], p10[channel], tx)
+        bottom = _blend_channel(p01[channel], p11[channel], tx)
+        result.append(clamp(round(_blend_channel(top, bottom, ty)), 0, 255))
+    return tuple(result)  # type: ignore[return-value]
+
+
+def rotate_rgba(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    degrees_clockwise: float,
+    fill: Sequence[int],
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Tuple[bytes, int, int]:
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    if len(rgba) < width * height * 4:
+        raise ValueError("rgba buffer is smaller than width * height * 4")
+
+    if abs(degrees_clockwise) < 0.001:
+        if progress_callback is not None:
+            progress_callback(1.0, "Rotation skipped.")
+        return bytes(rgba), width, height
+
+    fill_rgba = normalize_rgba(fill)
+    radians = math.radians(degrees_clockwise)
+    cos_a = math.cos(radians)
+    sin_a = math.sin(radians)
+    src_cx = width / 2.0
+    src_cy = height / 2.0
+
+    corners = (
+        (-src_cx, -src_cy),
+        (width - src_cx, -src_cy),
+        (-src_cx, height - src_cy),
+        (width - src_cx, height - src_cy),
+    )
+    rotated = tuple((x * cos_a + y * sin_a, -x * sin_a + y * cos_a) for x, y in corners)
+    min_x = min(point[0] for point in rotated)
+    max_x = max(point[0] for point in rotated)
+    min_y = min(point[1] for point in rotated)
+    max_y = max(point[1] for point in rotated)
+    out_width = max(1, int(math.ceil(max_x - min_x)))
+    out_height = max(1, int(math.ceil(max_y - min_y)))
+    output = bytearray(fill_rgba * (out_width * out_height))
+
+    update_step = max(1, out_height // 30)
+    for y in range(out_height):
+        dest_y = min_y + y + 0.5
+        for x in range(out_width):
+            dest_x = min_x + x + 0.5
+            src_x = dest_x * cos_a - dest_y * sin_a + src_cx - 0.5
+            src_y = dest_x * sin_a + dest_y * cos_a + src_cy - 0.5
+            pixel = _sample_bilinear(rgba, width, height, src_x, src_y, fill_rgba)
+            i = (y * out_width + x) * 4
+            output[i : i + 4] = bytes(pixel)
+        if progress_callback is not None and y % update_step == 0:
+            progress_callback((y + 1) / max(1, out_height), "Rotating crop...")
+
+    return bytes(output), out_width, out_height
+
+
+def deskew_and_crop_rgba(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    background: Sequence[int],
+    threshold: int,
+    max_angle: float = 15.0,
+    crop_padding: int = 0,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> Tuple[bytes, int, int, float]:
+    def angle_progress(fraction: float, text: str) -> None:
+        if progress_callback is not None:
+            progress_callback(0.35 * fraction, text)
+
+    def rotation_progress(fraction: float, text: str) -> None:
+        if progress_callback is not None:
+            progress_callback(0.35 + 0.55 * fraction, text)
+
+    angle = estimate_deskew_angle(
+        rgba,
+        width,
+        height,
+        background,
+        threshold,
+        max_angle=max_angle,
+        progress_callback=angle_progress,
+    )
+    rotated, rotated_width, rotated_height = rotate_rgba(
+        rgba,
+        width,
+        height,
+        angle,
+        background,
+        progress_callback=rotation_progress,
+    )
+    if progress_callback is not None:
+        progress_callback(0.9, "Cropping deskew whitespace...")
+    cropped, cropped_width, cropped_height = crop_whitespace_rgba(
+        rotated,
+        rotated_width,
+        rotated_height,
+        background,
+        threshold,
+        padding=crop_padding,
+    )
+    if progress_callback is not None:
+        progress_callback(1.0, "Deskew ready.")
+    return cropped, cropped_width, cropped_height, angle
+
+
 def rotate_rgba_clockwise(
     rgba: bytes | bytearray | memoryview,
     width: int,

@@ -8,10 +8,14 @@ sys.path.insert(0, os.path.join(ROOT, "divide-scanned-images"))
 
 from divide_scanned_images_core import (  # noqa: E402
     Component,
+    crop_whitespace_rgba,
+    deskew_and_crop_rgba,
     detect_crops,
+    estimate_deskew_angle,
     extract_crop_rgba,
     iter_supported_files,
     plan_crop,
+    rotate_rgba,
     rotate_rgba_clockwise,
     sample_background,
 )
@@ -87,6 +91,61 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual((width, height), (2, 3))
         self.assertEqual(list(rotated[0::4]), [4, 1, 5, 2, 6, 3])
+
+    def test_crop_whitespace_rgba(self):
+        rgba = canvas(8, 8)
+        rect(rgba, 8, 2, 3, 6, 5, (0, 0, 0, 255))
+
+        cropped, width, height = crop_whitespace_rgba(rgba, 8, 8, (255, 255, 255, 255), 25)
+
+        self.assertEqual((width, height), (4, 2))
+        self.assertEqual(tuple(cropped[:4]), (0, 0, 0, 255))
+
+    def test_rotate_rgba_arbitrary_expands_canvas(self):
+        rgba = canvas(10, 4, (255, 255, 255, 255))
+        rect(rgba, 10, 2, 1, 8, 3, (0, 0, 0, 255))
+
+        rotated, width, height = rotate_rgba(rgba, 10, 4, 10.0, (255, 255, 255, 255))
+
+        self.assertGreater(width, 10)
+        self.assertGreater(height, 4)
+        self.assertEqual(len(rotated), width * height * 4)
+
+    def test_estimate_deskew_angle_for_slanted_line(self):
+        rgba = canvas(60, 40)
+        for x in range(10, 50):
+            y = round(24 - (x - 10) * 0.1763)
+            rect(rgba, 60, x, y, x + 1, y + 2, (0, 0, 0, 255))
+
+        angle = estimate_deskew_angle(rgba, 60, 40, (255, 255, 255, 255), 25, max_angle=15.0)
+
+        self.assertLess(angle, -5.0)
+        self.assertGreater(angle, -13.0)
+
+    def test_deskew_and_crop_reduces_rotated_rectangle_canvas(self):
+        rgba = canvas(80, 50)
+        rect(rgba, 80, 10, 15, 70, 35, (0, 0, 0, 255))
+        rotated, width, height = rotate_rgba(rgba, 80, 50, 10.0, (255, 255, 255, 255))
+        skewed, skewed_width, skewed_height = crop_whitespace_rgba(
+            rotated,
+            width,
+            height,
+            (255, 255, 255, 255),
+            25,
+        )
+
+        deskewed, deskewed_width, deskewed_height, angle = deskew_and_crop_rgba(
+            skewed,
+            skewed_width,
+            skewed_height,
+            (255, 255, 255, 255),
+            25,
+            max_angle=15.0,
+        )
+
+        self.assertLess(angle, -5.0)
+        self.assertLess(deskewed_width * deskewed_height, skewed_width * skewed_height)
+        self.assertEqual(len(deskewed), deskewed_width * deskewed_height * 4)
 
 
 if __name__ == "__main__":

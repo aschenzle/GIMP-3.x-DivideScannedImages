@@ -31,6 +31,7 @@ except (ImportError, ValueError):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from divide_scanned_images_core import (  # noqa: E402
+    deskew_and_crop_rgba,
     detect_crops,
     extract_crop_rgba,
     iter_supported_files,
@@ -103,6 +104,9 @@ def _detection_fingerprint(settings):
         "limit",
         "threshold",
         "min_size",
+        "deskew",
+        "deskew_max_angle",
+        "deskew_crop_padding",
         "manual_bg",
         "manual_bg_color",
         "corner",
@@ -140,6 +144,9 @@ def _run_image_dialog(procedure, config, image, drawable):
         "auto-close",
         "threshold",
         "min-size",
+        "deskew",
+        "deskew-max-angle",
+        "deskew-crop-padding",
         "manual-background",
         "background-color",
         "sample-corner",
@@ -226,7 +233,8 @@ def _run_image_dialog(procedure, config, image, drawable):
         thumb = pixbuf.scale_simple(thumb_width, thumb_height, GdkPixbuf.InterpType.BILINEAR)
         image_widget.set_from_pixbuf(thumb)
         label_widget.set_text(
-            f"{item['index'] + 1}: {item['width']} x {item['height']} ({item['rotation']} deg)"
+            f"{item['index'] + 1}: {item['width']} x {item['height']} "
+            f"({item['rotation']} deg, deskew {item['deskew_angle']:.1f} deg)"
         )
 
     def rotate_preview_item(button, item, image_widget, label_widget):
@@ -275,12 +283,27 @@ def _run_image_dialog(procedure, config, image, drawable):
 
         for index, crop in enumerate(crops):
             crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+            def postprocess_progress(fraction, text, item_index=index):
+                set_dialog_progress(
+                    0.85 + (0.15 * (item_index + fraction) / max(1, len(crops))),
+                    text,
+                )
+
+            crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
+                crop_bytes,
+                crop_width,
+                crop_height,
+                background,
+                settings,
+                progress_callback=postprocess_progress,
+            )
             item = {
                 "index": index,
                 "bytes": crop_bytes,
                 "width": crop_width,
                 "height": crop_height,
                 "rotation": 0,
+                "deskew_angle": deskew_angle,
             }
             preview_cache["items"].append(item)
 
@@ -438,6 +461,9 @@ def _settings_from_config(config):
         "auto_close": config.get_property("auto-close"),
         "threshold": config.get_property("threshold"),
         "min_size": config.get_property("min-size"),
+        "deskew": config.get_property("deskew"),
+        "deskew_max_angle": config.get_property("deskew-max-angle"),
+        "deskew_crop_padding": config.get_property("deskew-crop-padding"),
         "manual_bg": config.get_property("manual-background"),
         "manual_bg_color": _rgba_from_gegl_color(config.get_property("background-color")),
         "corner": config.get_property("sample-corner"),
@@ -487,6 +513,22 @@ def _selected_layer(image, drawables=None):
         return layers[0]
 
     raise RuntimeError("No usable layer found.")
+
+
+def _postprocess_crop_bytes(crop_bytes, crop_width, crop_height, background, settings, progress_callback=None):
+    if not settings["deskew"]:
+        return crop_bytes, crop_width, crop_height, 0.0
+
+    return deskew_and_crop_rgba(
+        crop_bytes,
+        crop_width,
+        crop_height,
+        background,
+        settings["threshold"],
+        max_angle=settings["deskew_max_angle"],
+        crop_padding=settings["deskew_crop_padding"],
+        progress_callback=progress_callback,
+    )
 
 
 def _save_crop_items(image, settings, crop_items):
@@ -549,6 +591,20 @@ def _detect_crop_items(image, drawable, settings):
     crop_items = []
     for index, crop in enumerate(crops):
         crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+        def postprocess_progress(fraction, text, item_index=index):
+            _gimp_progress(
+                0.70 + (0.20 * (item_index + fraction) / max(1, len(crops))),
+                text,
+            )
+
+        crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
+            crop_bytes,
+            crop_width,
+            crop_height,
+            background,
+            settings,
+            progress_callback=postprocess_progress,
+        )
         crop_items.append(
             {
                 "index": index,
@@ -556,6 +612,7 @@ def _detect_crop_items(image, drawable, settings):
                 "width": crop_width,
                 "height": crop_height,
                 "rotation": 0,
+                "deskew_angle": deskew_angle,
             }
         )
         _gimp_progress(
@@ -622,6 +679,9 @@ def batch_run(procedure, config, data):
                 "auto-close",
                 "threshold",
                 "min-size",
+                "deskew",
+                "deskew-max-angle",
+                "deskew-crop-padding",
                 "manual-background",
                 "background-color",
                 "sample-corner",
@@ -673,6 +733,9 @@ def _add_common_arguments(procedure, include_target=True):
     procedure.add_boolean_argument("auto-close", "Auto-close sub-images after saving", None, True, flags)
     procedure.add_int_argument("threshold", "Selection threshold", None, 0, 255, 25, flags)
     procedure.add_int_argument("min-size", "Size threshold", None, 0, 5000, 100, flags)
+    procedure.add_boolean_argument("deskew", "Deskew after splitting", None, False, flags)
+    procedure.add_int_argument("deskew-max-angle", "Max deskew angle", None, 0, 45, 15, flags)
+    procedure.add_int_argument("deskew-crop-padding", "Whitespace crop padding after deskew", None, 0, 1000, 0, flags)
     procedure.add_boolean_argument("manual-background", "Manually define background color", None, False, flags)
     procedure.add_color_argument("background-color", "Manual background color", None, False, Gegl.Color.new("white"), flags)
     procedure.add_choice_argument(
