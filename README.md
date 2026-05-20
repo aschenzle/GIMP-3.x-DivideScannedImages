@@ -72,6 +72,20 @@ python -m unittest discover -s tests
 python -m py_compile .\divide-scanned-images\divide_scanned_images_core.py .\divide-scanned-images\divide-scanned-images.py
 ```
 
+To iterate on a real image without launching GIMP, run the core pipeline from disk. This uses Pillow only for image file loading/saving; detection, deskew, rotation, and cropping still use the same plug-in core code:
+
+```powershell
+python .\tools\process_disk_image.py C:\path\to\scan.jpg --output-dir .\disk-test-output --deskew --threshold 25 --min-size 100
+```
+
+You can also wire one real image into unittest:
+
+```powershell
+$env:DSI_TEST_IMAGE='C:\path\to\scan.jpg'
+$env:DSI_DESKEW='1'
+python -m unittest tests.test_disk_image
+```
+
 The GIMP runtime itself is not available from this workspace unless `gimp` is on `PATH`, so final plug-in loading needs to be checked inside GIMP.
 
 ## Upstream
