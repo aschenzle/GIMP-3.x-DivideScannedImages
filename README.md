@@ -51,6 +51,7 @@ Important options match the original plug-in:
 - `Deskew after splitting`: estimates each crop's skew from the detected photo footprint, rotates it in memory, samples the rotated crop corners as the local background, then trims leftover background whitespace.
 - `Max deskew angle`: ignores larger estimated angles so badly detected crops are not accidentally rotated.
 - `Whitespace crop padding after deskew`: keeps a small background border after deskew whitespace trimming.
+- `Enhance with OpenAI after split`: after `Split`, saves the normal crop and then saves an additional `-enhanced.png` copy generated with OpenAI's image edit endpoint. Preview does not call OpenAI.
 - `Save output to source directory`: uses the opened file's folder when available.
 
 If the source image has not been saved and no target directory is selected, the plug-in stops and asks for an explicit output directory instead of silently writing into the process working folder.
@@ -58,6 +59,14 @@ If the source image has not been saved and no target directory is selected, the 
 The split/save operation reports progress through GIMP's progress UI. Preview generation also has a progress bar inside the dialog.
 
 After the source scan has been analyzed, crop extraction and in-memory post-processing run in a process pool with up to one fewer worker than the number of CPU cores. If the embedded GIMP Python runtime cannot spawn process workers, the plug-in falls back to sequential processing.
+
+OpenAI enhancement requires `OPENAI_API_KEY` in the environment visible to GIMP. The prompt is:
+
+```text
+Improve the definition/detail of this photo without creating anything new. Preserve the original people, objects, composition, colors, identity, and historical/photo-real appearance. Do not add, remove, replace, stylize, beautify, or invent details.
+```
+
+The OpenAI image edit API is generative, so exact preservation cannot be guaranteed. Keep the normal crop files as the source of truth.
 
 The optional external `deskew.exe` step from the original Script-Fu is not bundled here. This port focuses on GIMP 3's Python plug-in API and portable crop extraction.
 

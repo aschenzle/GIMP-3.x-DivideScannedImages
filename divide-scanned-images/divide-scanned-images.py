@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
 import multiprocessing
 import os
@@ -43,12 +44,16 @@ from divide_scanned_images_core import (  # noqa: E402
     rotate_rgba_clockwise,
     sample_background,
 )
+from divide_scanned_images_openai import enhance_png_with_openai  # noqa: E402
+from divide_scanned_images_openai import enhanced_output_path  # noqa: E402
+from divide_scanned_images_openai import rgba_to_png_bytes  # noqa: E402
 
 
 PLUGIN_BINARY = "divide-scanned-images"
 PROC_IMAGE = "python-fu-divide-scanned-images"
 PROC_BATCH = "python-fu-batch-divide-scanned-images"
 RGBA_FORMAT = "R'G'B'A u8"
+OPENAI_KEY_ENV = "OPENAI_API_KEY"
 
 CORNER_LABELS = {
     "top-left": "Top Left",
@@ -111,6 +116,7 @@ def _detection_fingerprint(settings):
         "deskew",
         "deskew_max_angle",
         "deskew_crop_padding",
+        "enhance_openai",
         "manual_bg",
         "manual_bg_color",
         "corner",
@@ -151,6 +157,7 @@ def _run_image_dialog(procedure, config, image, drawable):
         "deskew",
         "deskew-max-angle",
         "deskew-crop-padding",
+        "enhance-openai",
         "manual-background",
         "background-color",
         "sample-corner",
@@ -421,6 +428,14 @@ def _save_image(image, path):
     return Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, Gio.File.new_for_path(path), None)
 
 
+def _write_bytes(path, data):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(data)
+
+
 def _gimp_progress(fraction, text=None):
     if text:
         try:
@@ -432,6 +447,15 @@ def _gimp_progress(fraction, text=None):
     except Exception:
         pass
     _process_ui_events()
+
+
+def _run_background_call(callable_obj, waiting_text):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(callable_obj)
+        while not future.done():
+            _gimp_progress(0.0, waiting_text)
+            future.result(timeout=0.25) if future.done() else _process_ui_events()
+        return future.result()
 
 
 def _source_directory(image):
@@ -455,6 +479,7 @@ def _settings_from_config(config):
         "deskew": config.get_property("deskew"),
         "deskew_max_angle": config.get_property("deskew-max-angle"),
         "deskew_crop_padding": config.get_property("deskew-crop-padding"),
+        "enhance_openai": config.get_property("enhance-openai"),
         "manual_bg": config.get_property("manual-background"),
         "manual_bg_color": _rgba_from_gegl_color(config.get_property("background-color")),
         "corner": config.get_property("sample-corner"),
@@ -487,6 +512,13 @@ def _output_path(settings, source_image, ordinal):
     file_number = settings["start_number"] + ordinal
     filename = f"{settings['file_base']}{file_number:05d}{extension}"
     return os.path.join(target_dir, filename)
+
+
+def _openai_api_key():
+    key = os.environ.get(OPENAI_KEY_ENV, "")
+    if not key:
+        raise RuntimeError(f"{OPENAI_KEY_ENV} is not set. Disable OpenAI enhancement or set the environment variable.")
+    return key
 
 
 def _selected_layer(image, drawables=None):
@@ -598,6 +630,7 @@ def _prepare_crop_items_parallel(crops, rgba, width, height, background, setting
 def _save_crop_items(image, settings, crop_items):
     outputs = []
     total = len(crop_items)
+    api_key = _openai_api_key() if settings["enhance_openai"] else None
     for index, item in enumerate(crop_items):
         _gimp_progress(index / max(1, total), f"Saving crop {index + 1} of {total}...")
         out_image, _out_layer = _new_crop_image(
@@ -610,6 +643,23 @@ def _save_crop_items(image, settings, crop_items):
         path = _output_path(settings, image, index)
         _save_image(out_image, path)
         outputs.append(path)
+        if api_key:
+            enhanced_path = enhanced_output_path(path)
+            _gimp_progress(
+                index / max(1, total),
+                f"Enhancing crop {index + 1} of {total} with OpenAI...",
+            )
+            png_bytes = rgba_to_png_bytes(item["bytes"], item["width"], item["height"])
+            enhanced_bytes = _run_background_call(
+                lambda data=png_bytes: enhance_png_with_openai(data, api_key),
+                f"Waiting for OpenAI enhancement {index + 1} of {total}...",
+            )
+            _write_bytes(enhanced_path, enhanced_bytes)
+            outputs.append(enhanced_path)
+            _gimp_progress(
+                (index + 0.5) / max(1, total),
+                f"Saved enhanced crop {index + 1} of {total}",
+            )
         if settings["auto_close"]:
             out_image.delete()
         else:
@@ -705,7 +755,7 @@ def divide_run(procedure, run_mode, image, drawables, config, data):
         finally:
             image.undo_group_end()
 
-        Gimp.message(f"Divide Scanned Images: extracted {len(outputs)} item(s).")
+        Gimp.message(f"Divide Scanned Images: saved {len(outputs)} file(s).")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, None)
     except Exception as exc:
         return _error_return(procedure, exc)
@@ -726,6 +776,7 @@ def batch_run(procedure, config, data):
                 "deskew",
                 "deskew-max-angle",
                 "deskew-crop-padding",
+                "enhance-openai",
                 "manual-background",
                 "background-color",
                 "sample-corner",
@@ -763,7 +814,7 @@ def batch_run(procedure, config, data):
             finally:
                 image.delete()
 
-        Gimp.message(f"Batch Divide Scanned Images: extracted {total_outputs} item(s) from {len(files)} file(s).")
+        Gimp.message(f"Batch Divide Scanned Images: saved {total_outputs} file(s) from {len(files)} source file(s).")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, None)
     except Exception as exc:
         return _error_return(procedure, exc)
@@ -780,6 +831,7 @@ def _add_common_arguments(procedure, include_target=True):
     procedure.add_boolean_argument("deskew", "Deskew after splitting", None, False, flags)
     procedure.add_int_argument("deskew-max-angle", "Max deskew angle", None, 0, 45, 15, flags)
     procedure.add_int_argument("deskew-crop-padding", "Whitespace crop padding after deskew", None, 0, 1000, 0, flags)
+    procedure.add_boolean_argument("enhance-openai", "Enhance with OpenAI after split", None, False, flags)
     procedure.add_boolean_argument("manual-background", "Manually define background color", None, False, flags)
     procedure.add_color_argument("background-color", "Manual background color", None, False, Gegl.Color.new("white"), flags)
     procedure.add_choice_argument(
