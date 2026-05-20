@@ -445,7 +445,10 @@ def _save_image(image, path):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    return Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, Gio.File.new_for_path(path), None)
+    result = Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, Gio.File.new_for_path(path), None)
+    if not os.path.exists(path):
+        raise RuntimeError(f"GIMP did not create expected output file: {path}")
+    return result
 
 
 def _write_bytes(path, data):
@@ -454,6 +457,8 @@ def _write_bytes(path, data):
         os.makedirs(parent, exist_ok=True)
     with open(path, "wb") as handle:
         handle.write(data)
+    if not os.path.exists(path):
+        raise RuntimeError(f"Could not create expected output file: {path}")
 
 
 def _gimp_progress(fraction, text=None):
@@ -696,6 +701,8 @@ def _save_crop_items(image, settings, crop_items):
         _gimp_progress((index + 1) / max(1, total), f"Saved crop {index + 1} of {total}")
 
     Gimp.displays_flush()
+    if outputs:
+        Gimp.message("Divide Scanned Images saved:\n" + "\n".join(outputs))
     return outputs
 
 
