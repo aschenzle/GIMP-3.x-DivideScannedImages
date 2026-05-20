@@ -528,7 +528,7 @@ def _output_path(settings, source_image, ordinal):
     save_type = settings["save_type"]
     extension = ".jpg" if save_type == "jpg" else ".png"
     target_dir = settings["target_dir"]
-    if settings["save_in_source"]:
+    if not target_dir and settings["save_in_source"]:
         source_dir = _source_directory(source_image)
         if source_dir:
             target_dir = source_dir
@@ -885,7 +885,7 @@ def _add_common_arguments(procedure, include_target=True):
         procedure.add_file_argument(
             "target-dir",
             "Target directory",
-            "Used when not saving output to the source directory.",
+            "Used first when selected; otherwise the source directory option can be used.",
             Gimp.FileChooserAction.SELECT_FOLDER,
             True,
             None,

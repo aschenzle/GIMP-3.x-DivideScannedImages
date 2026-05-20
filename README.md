@@ -54,7 +54,7 @@ Important options match the original plug-in:
 - `Max deskew angle`: ignores larger estimated angles so badly detected crops are not accidentally rotated.
 - `Whitespace crop padding after deskew`: keeps a small background border after deskew whitespace trimming.
 - `Enhance with OpenAI after split`: after `Split`, saves the normal crop and then saves an additional `-enhanced.png` copy generated with OpenAI's image edit endpoint. Preview does not call OpenAI.
-- `Save output to source directory`: uses the opened file's folder when available.
+- `Save output to source directory`: uses the opened file's folder only when no target directory is selected.
 
 If the source image has not been saved and no target directory is selected, the plug-in stops and asks for an explicit output directory instead of silently writing into the process working folder.
 
