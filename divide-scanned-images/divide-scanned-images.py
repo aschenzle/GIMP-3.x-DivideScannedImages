@@ -116,7 +116,6 @@ def _detection_fingerprint(settings):
         "deskew",
         "deskew_max_angle",
         "deskew_crop_padding",
-        "enhance_openai",
         "manual_bg",
         "manual_bg_color",
         "corner",
