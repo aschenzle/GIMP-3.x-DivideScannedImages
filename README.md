@@ -48,7 +48,7 @@ Important options match the original plug-in:
 - `Size threshold`: rejects small detected components as dust/noise.
 - `Force square crop`: creates square output around each detected item.
 - `Border padding`: adds background-colored padding around crops.
-- `Deskew after splitting`: estimates each crop's skew from the detected photo footprint, rotates it in memory, then trims leftover background whitespace.
+- `Deskew after splitting`: estimates each crop's skew from the detected photo footprint, rotates it in memory, samples the rotated crop corners as the local background, then trims leftover background whitespace.
 - `Max deskew angle`: ignores larger estimated angles so badly detected crops are not accidentally rotated.
 - `Whitespace crop padding after deskew`: keeps a small background border after deskew whitespace trimming.
 - `Save output to source directory`: uses the opened file's folder when available.
@@ -56,6 +56,8 @@ Important options match the original plug-in:
 If the source image has not been saved and no target directory is selected, the plug-in stops and asks for an explicit output directory instead of silently writing into the process working folder.
 
 The split/save operation reports progress through GIMP's progress UI. Preview generation also has a progress bar inside the dialog.
+
+After the source scan has been analyzed, crop extraction and in-memory post-processing run in parallel with up to one fewer worker than the number of CPU cores.
 
 The optional external `deskew.exe` step from the original Script-Fu is not bundled here. This port focuses on GIMP 3's Python plug-in API and portable crop extraction.
 

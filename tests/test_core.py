@@ -18,6 +18,7 @@ from divide_scanned_images_core import (  # noqa: E402
     rotate_rgba,
     rotate_rgba_clockwise,
     sample_background,
+    sample_corner_background,
 )
 
 
@@ -38,6 +39,12 @@ class CoreTests(unittest.TestCase):
         rect(rgba, 20, 10, 10, 15, 15, (0, 0, 0, 255))
 
         self.assertEqual(sample_background(rgba, 20, 20, "top-left", 2, 2, radius=1), (250, 251, 252, 255))
+
+    def test_samples_background_from_all_corners(self):
+        rgba = canvas(10, 10, (240, 241, 242, 255))
+        rect(rgba, 10, 4, 4, 6, 6, (0, 0, 0, 255))
+
+        self.assertEqual(sample_corner_background(rgba, 10, 10, radius=2), (240, 241, 242, 255))
 
     def test_detects_separate_components(self):
         rgba = canvas(30, 20)

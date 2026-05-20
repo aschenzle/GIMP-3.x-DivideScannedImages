@@ -116,6 +116,42 @@ def sample_background(
     return tuple(round(channel / count) for channel in totals)  # type: ignore[return-value]
 
 
+def sample_corner_background(
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    radius: int = 8,
+) -> RGBA:
+    """Average small patches from all four corners."""
+
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    if len(rgba) < width * height * 4:
+        raise ValueError("rgba buffer is smaller than width * height * 4")
+
+    patch = max(1, min(radius, width, height))
+    boxes = (
+        (0, 0, patch, patch),
+        (width - patch, 0, width, patch),
+        (0, height - patch, patch, height),
+        (width - patch, height - patch, width, height),
+    )
+    totals = [0, 0, 0, 0]
+    count = 0
+    for x0, y0, x1, y1 in boxes:
+        for y in range(y0, y1):
+            row = y * width * 4
+            for x in range(x0, x1):
+                i = row + x * 4
+                totals[0] += rgba[i]
+                totals[1] += rgba[i + 1]
+                totals[2] += rgba[i + 2]
+                totals[3] += rgba[i + 3]
+                count += 1
+
+    return tuple(round(channel / count) for channel in totals)  # type: ignore[return-value]
+
+
 def _is_foreground(pixel: RGBA, background: RGBA, threshold: int) -> bool:
     if pixel[3] == 0:
         return False
@@ -609,11 +645,12 @@ def deskew_and_crop_rgba(
     )
     if progress_callback is not None:
         progress_callback(0.9, "Cropping deskew whitespace...")
+    rotated_background = sample_corner_background(rotated, rotated_width, rotated_height)
     cropped, cropped_width, cropped_height = crop_whitespace_rgba(
         rotated,
         rotated_width,
         rotated_height,
-        background,
+        rotated_background,
         threshold,
         padding=crop_padding,
     )

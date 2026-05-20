@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait
 import os
 import sys
 import traceback
@@ -277,36 +280,23 @@ def _run_image_dialog(procedure, config, image, drawable):
             square=settings["square"],
             progress_callback=detection_progress,
         )
-        preview_cache["fingerprint"] = fingerprint
-        preview_cache["items"] = []
         preview_label.set_text(f"{len(crops)} crop(s) detected. Preview is in-memory and does not save files.")
 
-        for index, crop in enumerate(crops):
-            crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
-            def postprocess_progress(fraction, text, item_index=index):
-                set_dialog_progress(
-                    0.85 + (0.15 * (item_index + fraction) / max(1, len(crops))),
-                    text,
-                )
+        def crop_progress(fraction, text):
+            set_dialog_progress(0.85 + 0.15 * fraction, text)
 
-            crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
-                crop_bytes,
-                crop_width,
-                crop_height,
-                background,
-                settings,
-                progress_callback=postprocess_progress,
-            )
-            item = {
-                "index": index,
-                "bytes": crop_bytes,
-                "width": crop_width,
-                "height": crop_height,
-                "rotation": 0,
-                "deskew_angle": deskew_angle,
-            }
-            preview_cache["items"].append(item)
+        preview_cache["fingerprint"] = fingerprint
+        preview_cache["items"] = _prepare_crop_items_parallel(
+            crops,
+            rgba,
+            width,
+            height,
+            background,
+            settings,
+            progress_callback=crop_progress,
+        )
 
+        for index, item in enumerate(preview_cache["items"]):
             crop_image = Gtk.Image()
             crop_label = Gtk.Label()
             crop_label.set_xalign(0.5)
@@ -531,6 +521,63 @@ def _postprocess_crop_bytes(crop_bytes, crop_width, crop_height, background, set
     )
 
 
+def _worker_count(task_count):
+    if task_count <= 0:
+        return 1
+    return min(task_count, max(1, (os.cpu_count() or 2) - 1))
+
+
+def _prepare_crop_item(index, crop, rgba, width, height, background, settings):
+    crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+    crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
+        crop_bytes,
+        crop_width,
+        crop_height,
+        background,
+        settings,
+    )
+    return {
+        "index": index,
+        "bytes": crop_bytes,
+        "width": crop_width,
+        "height": crop_height,
+        "rotation": 0,
+        "deskew_angle": deskew_angle,
+    }
+
+
+def _prepare_crop_items_parallel(crops, rgba, width, height, background, settings, progress_callback=None):
+    total = len(crops)
+    if total == 0:
+        return []
+
+    max_workers = _worker_count(total)
+    items = [None] * total
+    completed = 0
+    if progress_callback is not None:
+        progress_callback(0.0, f"Preparing {total} crop(s) with {max_workers} worker(s)...")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = {
+            executor.submit(_prepare_crop_item, index, crop, rgba, width, height, background, settings)
+            for index, crop in enumerate(crops)
+        }
+        while pending:
+            done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+            if not done:
+                if progress_callback is not None:
+                    progress_callback(completed / total, f"Preparing crops... {completed} of {total} complete")
+                continue
+            for future in done:
+                item = future.result()
+                items[item["index"]] = item
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed / total, f"Prepared crop {completed} of {total}")
+
+    return items
+
+
 def _save_crop_items(image, settings, crop_items):
     outputs = []
     total = len(crop_items)
@@ -588,38 +635,18 @@ def _detect_crop_items(image, drawable, settings):
         progress_callback=detection_progress,
     )
 
-    crop_items = []
-    for index, crop in enumerate(crops):
-        crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
-        def postprocess_progress(fraction, text, item_index=index):
-            _gimp_progress(
-                0.70 + (0.20 * (item_index + fraction) / max(1, len(crops))),
-                text,
-            )
+    def crop_progress(fraction, text):
+        _gimp_progress(0.70 + 0.20 * fraction, text)
 
-        crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
-            crop_bytes,
-            crop_width,
-            crop_height,
-            background,
-            settings,
-            progress_callback=postprocess_progress,
-        )
-        crop_items.append(
-            {
-                "index": index,
-                "bytes": crop_bytes,
-                "width": crop_width,
-                "height": crop_height,
-                "rotation": 0,
-                "deskew_angle": deskew_angle,
-            }
-        )
-        _gimp_progress(
-            0.70 + (0.20 * (index + 1) / max(1, len(crops))),
-            f"Prepared crop {index + 1} of {len(crops)}...",
-        )
-    return crop_items
+    return _prepare_crop_items_parallel(
+        crops,
+        rgba,
+        width,
+        height,
+        background,
+        settings,
+        progress_callback=crop_progress,
+    )
 
 
 def _divide_image(image, drawable, settings, cached_items=None):
