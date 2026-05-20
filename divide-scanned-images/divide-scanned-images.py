@@ -36,9 +36,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from divide_scanned_images_core import (  # noqa: E402
     detect_crops,
+    extract_crop_rgba,
     iter_supported_files,
     normalize_rgba,
-    prepare_crop_item,
+    postprocess_crop_item,
     rotate_rgba_clockwise,
     sample_background,
 )
@@ -512,12 +513,32 @@ def _worker_count(task_count):
 
 
 def _prepare_crop_items_sequential(crops, rgba, width, height, background, settings, progress_callback=None):
-    total = len(crops)
+    items = _extract_crop_items(crops, rgba, width, height, background, progress_callback)
+    total = len(items)
+    processed = []
+    for index, item in enumerate(items):
+        processed.append(postprocess_crop_item(item, background, settings))
+        if progress_callback is not None:
+            progress_callback((index + 1) / max(1, total), f"Processed crop {index + 1} of {total}")
+    return processed
+
+
+def _extract_crop_items(crops, rgba, width, height, background, progress_callback=None):
     items = []
     for index, crop in enumerate(crops):
-        items.append(prepare_crop_item(index, crop, rgba, width, height, background, settings))
+        crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+        items.append(
+            {
+                "index": index,
+                "bytes": crop_bytes,
+                "width": crop_width,
+                "height": crop_height,
+                "rotation": 0,
+                "deskew_angle": 0.0,
+            }
+        )
         if progress_callback is not None:
-            progress_callback((index + 1) / max(1, total), f"Prepared crop {index + 1} of {total}")
+            progress_callback(0.2 * ((index + 1) / max(1, len(crops))), f"Extracted crop {index + 1} of {len(crops)}")
     return items
 
 
@@ -525,41 +546,51 @@ def _prepare_crop_items_parallel(crops, rgba, width, height, background, setting
     total = len(crops)
     if total == 0:
         return []
-    rgba_bytes = bytes(rgba)
     background_rgba = tuple(background)
     worker_settings = dict(settings)
+    extracted_items = _extract_crop_items(crops, rgba, width, height, background_rgba, progress_callback)
     max_workers = _worker_count(total)
     if max_workers == 1:
-        return _prepare_crop_items_sequential(crops, rgba_bytes, width, height, background_rgba, worker_settings, progress_callback)
+        processed = []
+        for index, item in enumerate(extracted_items):
+            processed.append(postprocess_crop_item(item, background_rgba, worker_settings))
+            if progress_callback is not None:
+                progress_callback(0.2 + 0.8 * ((index + 1) / total), f"Processed crop {index + 1} of {total}")
+        return processed
 
     items = [None] * total
     completed = 0
     if progress_callback is not None:
-        progress_callback(0.0, f"Preparing {total} crop(s) with {max_workers} process worker(s)...")
+        progress_callback(0.2, f"Processing {total} crop(s) with {max_workers} process worker(s)...")
 
     try:
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
             pending = {
-                executor.submit(prepare_crop_item, index, crop, rgba_bytes, width, height, background_rgba, worker_settings)
-                for index, crop in enumerate(crops)
+                executor.submit(postprocess_crop_item, item, background_rgba, worker_settings)
+                for item in extracted_items
             }
             while pending:
                 done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
                 if not done:
                     if progress_callback is not None:
-                        progress_callback(completed / total, f"Preparing crops... {completed} of {total} complete")
+                        progress_callback(0.2 + 0.8 * (completed / total), f"Processing crops... {completed} of {total} complete")
                     continue
                 for future in done:
                     item = future.result()
                     items[item["index"]] = item
                     completed += 1
                     if progress_callback is not None:
-                        progress_callback(completed / total, f"Prepared crop {completed} of {total}")
+                        progress_callback(0.2 + 0.8 * (completed / total), f"Processed crop {completed} of {total}")
     except Exception as exc:
         if progress_callback is not None:
             progress_callback(0.0, f"Process workers unavailable; falling back to sequential processing ({exc})")
-        return _prepare_crop_items_sequential(crops, rgba_bytes, width, height, background_rgba, worker_settings, progress_callback)
+        processed = []
+        for index, item in enumerate(extracted_items):
+            processed.append(postprocess_crop_item(item, background_rgba, worker_settings))
+            if progress_callback is not None:
+                progress_callback((index + 1) / total, f"Processed crop {index + 1} of {total}")
+        return processed
 
     return items
 

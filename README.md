@@ -86,6 +86,14 @@ $env:DSI_DESKEW='1'
 python -m unittest tests.test_disk_image
 ```
 
+The repository also includes a hardwired disk regression:
+
+```powershell
+python -m unittest tests.test_disk_image.DiskImageTests.test_sample_resource_matches_expected_outputs
+```
+
+That test processes `tests/resources/Sample.png`, compares the generated crops to `tests/resources/Sample-output-*.png`, and verifies each crop edge has at least 20% foreground density against the sampled source background. It is intentionally slower than the unit-only tests because it runs the full disk pipeline.
+
 The GIMP runtime itself is not available from this workspace unless `gimp` is on `PATH`, so final plug-in loading needs to be checked inside GIMP.
 
 ## Upstream

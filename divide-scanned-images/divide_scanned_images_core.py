@@ -400,10 +400,43 @@ def crop_whitespace_rgba(
     background: Sequence[int],
     threshold: int,
     padding: int = 0,
+    min_edge_foreground_ratio: float = 0.0,
 ) -> Tuple[bytes, int, int]:
     bbox = foreground_bbox(rgba, width, height, background, threshold)
     if bbox is None:
         return bytes(rgba), width, height
+
+    if min_edge_foreground_ratio > 0.0:
+        bg = normalize_rgba(background)
+        ratio = max(0.0, min(1.0, min_edge_foreground_ratio))
+
+        def row_ratio(y: int) -> float:
+            row = y * width * 4
+            count = 0
+            for x in range(width):
+                i = row + x * 4
+                if _is_foreground((rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]), bg, threshold):
+                    count += 1
+            return count / max(1, width)
+
+        def col_ratio(x: int) -> float:
+            count = 0
+            for y in range(height):
+                i = (y * width + x) * 4
+                if _is_foreground((rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]), bg, threshold):
+                    count += 1
+            return count / max(1, height)
+
+        left, top, right, bottom = bbox
+        while top < bottom - 1 and row_ratio(top) < ratio:
+            top += 1
+        while bottom > top + 1 and row_ratio(bottom - 1) < ratio:
+            bottom -= 1
+        while left < right - 1 and col_ratio(left) < ratio:
+            left += 1
+        while right > left + 1 and col_ratio(right - 1) < ratio:
+            right -= 1
+        bbox = (left, top, right, bottom)
 
     padding = max(0, int(padding))
     x0, y0, x1, y1 = bbox
@@ -653,6 +686,7 @@ def deskew_and_crop_rgba(
         rotated_background,
         threshold,
         padding=crop_padding,
+        min_edge_foreground_ratio=0.2,
     )
     if progress_callback is not None:
         progress_callback(1.0, "Deskew ready.")
@@ -705,6 +739,26 @@ def prepare_crop_item(
         "rotation": 0,
         "deskew_angle": deskew_angle,
     }
+
+
+def postprocess_crop_item(
+    item: dict,
+    background: Sequence[int],
+    settings: dict,
+) -> dict:
+    crop_bytes, crop_width, crop_height, deskew_angle = postprocess_crop_rgba(
+        item["bytes"],
+        item["width"],
+        item["height"],
+        background,
+        settings,
+    )
+    processed = dict(item)
+    processed["bytes"] = crop_bytes
+    processed["width"] = crop_width
+    processed["height"] = crop_height
+    processed["deskew_angle"] = deskew_angle
+    return processed
 
 
 def rotate_rgba_clockwise(

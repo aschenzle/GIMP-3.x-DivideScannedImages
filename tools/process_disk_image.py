@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+import os
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +18,8 @@ except ImportError as exc:  # pragma: no cover - environment-specific message
     raise SystemExit("Pillow is required for disk image loading: python -m pip install pillow") from exc
 
 from divide_scanned_images_core import detect_crops
-from divide_scanned_images_core import prepare_crop_item
+from divide_scanned_images_core import extract_crop_rgba
+from divide_scanned_images_core import postprocess_crop_item
 from divide_scanned_images_core import sample_background
 from divide_scanned_images_core import sample_corner_background
 
@@ -33,6 +36,10 @@ def load_rgba(path: Path) -> tuple[bytes, int, int]:
 def save_rgba(path: Path, rgba: bytes, width: int, height: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.frombytes("RGBA", (width, height), rgba).save(path)
+
+
+def worker_count(task_count: int) -> int:
+    return min(task_count, max(1, (os.cpu_count() or 2) - 1))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -76,8 +83,30 @@ def run(args: argparse.Namespace) -> int:
     print(f"Background: {background}")
     print(f"Detected crops: {len(crops)}")
 
+    items = []
     for index, crop in enumerate(crops):
-        item = prepare_crop_item(index, crop, rgba, width, height, background, settings)
+        crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+        items.append(
+            {
+                "index": index,
+                "bytes": crop_bytes,
+                "width": crop_width,
+                "height": crop_height,
+                "rotation": 0,
+                "deskew_angle": 0.0,
+            }
+        )
+
+    if len(items) > 1:
+        workers = worker_count(len(items))
+        print(f"Processing crops with {workers} worker(s)")
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            processed_items = list(executor.map(postprocess_crop_item, items, [background] * len(items), [settings] * len(items)))
+    else:
+        processed_items = [postprocess_crop_item(item, background, settings) for item in items]
+
+    for item in sorted(processed_items, key=lambda value: value["index"]):
+        index = item["index"]
         output = args.output_dir / f"{args.prefix}{index + args.start_number:05d}.png"
         save_rgba(output, item["bytes"], item["width"], item["height"])
         print(
