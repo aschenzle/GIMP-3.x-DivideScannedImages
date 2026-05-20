@@ -171,7 +171,7 @@ def _run_image_dialog(procedure, config, image, drawable):
 
     dialog = GimpUi.ProcedureDialog.new(procedure, config, "Divide Scanned Images")
     dialog.set_ok_label("_Split")
-    dialog.set_default_size(1100, 720)
+    dialog.set_default_size(1400, 820)
     preview_response = 1001
     dialog.add_button("_Preview", preview_response)
 
@@ -195,7 +195,7 @@ def _run_image_dialog(procedure, config, image, drawable):
     preview_flow = Gtk.FlowBox()
     preview_flow.set_selection_mode(Gtk.SelectionMode.NONE)
     preview_flow.set_min_children_per_line(1)
-    preview_flow.set_max_children_per_line(4)
+    preview_flow.set_max_children_per_line(6)
     preview_flow.set_row_spacing(10)
     preview_flow.set_column_spacing(10)
     preview_flow.set_margin_top(8)
@@ -219,6 +219,7 @@ def _run_image_dialog(procedure, config, image, drawable):
     main_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
     main_paned.pack1(options_scroll, resize=False, shrink=False)
     main_paned.pack2(preview_box, resize=True, shrink=False)
+    main_paned.set_position(330)
 
     dialog.get_content_area().pack_start(main_paned, True, True, 0)
     preview_cache = {"fingerprint": None, "items": []}
@@ -237,7 +238,7 @@ def _run_image_dialog(procedure, config, image, drawable):
 
     def update_preview_tile(item, image_widget, label_widget):
         pixbuf = _pixbuf_from_rgba(item["bytes"], item["width"], item["height"])
-        scale = min(180 / item["width"], 180 / item["height"], 1.0)
+        scale = min(170 / item["width"], 170 / item["height"], 1.0)
         thumb_width = max(1, int(item["width"] * scale))
         thumb_height = max(1, int(item["height"] * scale))
         thumb = pixbuf.scale_simple(thumb_width, thumb_height, GdkPixbuf.InterpType.BILINEAR)
@@ -255,6 +256,12 @@ def _run_image_dialog(procedure, config, image, drawable):
         )
         item["rotation"] = (item["rotation"] + 90) % 360
         update_preview_tile(item, image_widget, label_widget)
+
+    def update_keep_selection(button, item):
+        item["keep"] = button.get_active()
+
+    def update_enhance_selection(button, item):
+        item["enhance"] = button.get_active()
 
     def render_preview():
         clear_preview()
@@ -302,6 +309,9 @@ def _run_image_dialog(procedure, config, image, drawable):
             settings,
             progress_callback=crop_progress,
         )
+        for item in preview_cache["items"]:
+            item["keep"] = True
+            item["enhance"] = True
 
         for index, item in enumerate(preview_cache["items"]):
             crop_image = Gtk.Image()
@@ -309,12 +319,23 @@ def _run_image_dialog(procedure, config, image, drawable):
             crop_label.set_xalign(0.5)
             rotate_button = Gtk.Button(label="Rotate")
             rotate_button.connect("clicked", rotate_preview_item, item, crop_image, crop_label)
+            keep_check = Gtk.CheckButton(label="Keep")
+            keep_check.set_active(True)
+            keep_check.connect("toggled", update_keep_selection, item)
+            enhance_check = Gtk.CheckButton(label="Enhance")
+            enhance_check.set_active(True)
+            enhance_check.connect("toggled", update_enhance_selection, item)
             update_preview_tile(item, crop_image, crop_label)
+
+            control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            control_box.pack_start(keep_check, False, False, 0)
+            control_box.pack_start(enhance_check, False, False, 0)
+            control_box.pack_start(rotate_button, False, False, 0)
 
             crop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             crop_box.pack_start(crop_image, False, False, 0)
             crop_box.pack_start(crop_label, False, False, 0)
-            crop_box.pack_start(rotate_button, False, False, 0)
+            crop_box.pack_start(control_box, False, False, 0)
 
             frame = Gtk.Frame()
             frame.add(crop_box)
@@ -627,10 +648,11 @@ def _prepare_crop_items_parallel(crops, rgba, width, height, background, setting
 
 
 def _save_crop_items(image, settings, crop_items):
+    selected_items = [item for item in crop_items if item.get("keep", True)]
     outputs = []
-    total = len(crop_items)
+    total = len(selected_items)
     api_key = _openai_api_key() if settings["enhance_openai"] else None
-    for index, item in enumerate(crop_items):
+    for index, item in enumerate(selected_items):
         _gimp_progress(index / max(1, total), f"Saving crop {index + 1} of {total}...")
         out_image, _out_layer = _new_crop_image(
             item["bytes"],
@@ -642,7 +664,7 @@ def _save_crop_items(image, settings, crop_items):
         path = _output_path(settings, image, index)
         _save_image(out_image, path)
         outputs.append(path)
-        if api_key:
+        if api_key and item.get("enhance", True):
             enhanced_path = enhanced_output_path(path)
             _gimp_progress(
                 index / max(1, total),

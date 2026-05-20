@@ -36,6 +36,8 @@ Filters > Divide Scanned Images...
 
 The interactive dialog includes a `Preview` button. Preview runs crop detection in memory and shows the detected split images in the same dialog without writing files. Each preview has a `Rotate` button; rotations are applied to the cached in-memory crop and are preserved when you click `Split`.
 
+Each preview tile is selected by default. Clear `Keep` to skip saving that crop. Clear `Enhance` to save the crop without sending that specific image to OpenAI when global OpenAI enhancement is enabled.
+
 The batch entry is registered as:
 
 ```text
