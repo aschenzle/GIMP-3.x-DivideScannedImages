@@ -651,6 +651,8 @@ def _save_crop_items(image, settings, crop_items):
     selected_items = [item for item in crop_items if item.get("keep", True)]
     outputs = []
     total = len(selected_items)
+    if total == 0:
+        raise RuntimeError("No preview crops are selected. Select at least one Keep checkbox before splitting.")
     api_key = _openai_api_key() if settings["enhance_openai"] else None
     for index, item in enumerate(selected_items):
         _gimp_progress(index / max(1, total), f"Saving crop {index + 1} of {total}...")
@@ -662,6 +664,7 @@ def _save_crop_items(image, settings, crop_items):
             f"Crop {index + 1}",
         )
         path = _output_path(settings, image, index)
+        _gimp_progress(index / max(1, total), f"Saving {os.path.basename(path)}...")
         _save_image(out_image, path)
         outputs.append(path)
         if api_key and item.get("enhance", True):
