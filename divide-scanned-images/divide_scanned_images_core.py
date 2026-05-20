@@ -659,6 +659,54 @@ def deskew_and_crop_rgba(
     return cropped, cropped_width, cropped_height, angle
 
 
+def postprocess_crop_rgba(
+    crop_bytes: bytes | bytearray | memoryview,
+    crop_width: int,
+    crop_height: int,
+    background: Sequence[int],
+    settings: dict,
+) -> Tuple[bytes, int, int, float]:
+    if not settings["deskew"]:
+        return bytes(crop_bytes), crop_width, crop_height, 0.0
+
+    return deskew_and_crop_rgba(
+        crop_bytes,
+        crop_width,
+        crop_height,
+        background,
+        settings["threshold"],
+        max_angle=settings["deskew_max_angle"],
+        crop_padding=settings["deskew_crop_padding"],
+    )
+
+
+def prepare_crop_item(
+    index: int,
+    crop: Crop,
+    rgba: bytes | bytearray | memoryview,
+    width: int,
+    height: int,
+    background: Sequence[int],
+    settings: dict,
+) -> dict:
+    crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
+    crop_bytes, crop_width, crop_height, deskew_angle = postprocess_crop_rgba(
+        crop_bytes,
+        crop_width,
+        crop_height,
+        background,
+        settings,
+    )
+    return {
+        "index": index,
+        "bytes": crop_bytes,
+        "width": crop_width,
+        "height": crop_height,
+        "rotation": 0,
+        "deskew_angle": deskew_angle,
+    }
+
+
 def rotate_rgba_clockwise(
     rgba: bytes | bytearray | memoryview,
     width: int,

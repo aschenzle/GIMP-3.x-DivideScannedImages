@@ -8,8 +8,9 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import wait
+import multiprocessing
 import os
 import sys
 import traceback
@@ -34,11 +35,10 @@ except (ImportError, ValueError):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from divide_scanned_images_core import (  # noqa: E402
-    deskew_and_crop_rgba,
     detect_crops,
-    extract_crop_rgba,
     iter_supported_files,
     normalize_rgba,
+    prepare_crop_item,
     rotate_rgba_clockwise,
     sample_background,
 )
@@ -505,75 +505,61 @@ def _selected_layer(image, drawables=None):
     raise RuntimeError("No usable layer found.")
 
 
-def _postprocess_crop_bytes(crop_bytes, crop_width, crop_height, background, settings, progress_callback=None):
-    if not settings["deskew"]:
-        return crop_bytes, crop_width, crop_height, 0.0
-
-    return deskew_and_crop_rgba(
-        crop_bytes,
-        crop_width,
-        crop_height,
-        background,
-        settings["threshold"],
-        max_angle=settings["deskew_max_angle"],
-        crop_padding=settings["deskew_crop_padding"],
-        progress_callback=progress_callback,
-    )
-
-
 def _worker_count(task_count):
     if task_count <= 0:
         return 1
     return min(task_count, max(1, (os.cpu_count() or 2) - 1))
 
 
-def _prepare_crop_item(index, crop, rgba, width, height, background, settings):
-    crop_bytes, crop_width, crop_height = extract_crop_rgba(rgba, width, height, crop, background)
-    crop_bytes, crop_width, crop_height, deskew_angle = _postprocess_crop_bytes(
-        crop_bytes,
-        crop_width,
-        crop_height,
-        background,
-        settings,
-    )
-    return {
-        "index": index,
-        "bytes": crop_bytes,
-        "width": crop_width,
-        "height": crop_height,
-        "rotation": 0,
-        "deskew_angle": deskew_angle,
-    }
+def _prepare_crop_items_sequential(crops, rgba, width, height, background, settings, progress_callback=None):
+    total = len(crops)
+    items = []
+    for index, crop in enumerate(crops):
+        items.append(prepare_crop_item(index, crop, rgba, width, height, background, settings))
+        if progress_callback is not None:
+            progress_callback((index + 1) / max(1, total), f"Prepared crop {index + 1} of {total}")
+    return items
 
 
 def _prepare_crop_items_parallel(crops, rgba, width, height, background, settings, progress_callback=None):
     total = len(crops)
     if total == 0:
         return []
-
+    rgba_bytes = bytes(rgba)
+    background_rgba = tuple(background)
+    worker_settings = dict(settings)
     max_workers = _worker_count(total)
+    if max_workers == 1:
+        return _prepare_crop_items_sequential(crops, rgba_bytes, width, height, background_rgba, worker_settings, progress_callback)
+
     items = [None] * total
     completed = 0
     if progress_callback is not None:
-        progress_callback(0.0, f"Preparing {total} crop(s) with {max_workers} worker(s)...")
+        progress_callback(0.0, f"Preparing {total} crop(s) with {max_workers} process worker(s)...")
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        pending = {
-            executor.submit(_prepare_crop_item, index, crop, rgba, width, height, background, settings)
-            for index, crop in enumerate(crops)
-        }
-        while pending:
-            done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
-            if not done:
-                if progress_callback is not None:
-                    progress_callback(completed / total, f"Preparing crops... {completed} of {total} complete")
-                continue
-            for future in done:
-                item = future.result()
-                items[item["index"]] = item
-                completed += 1
-                if progress_callback is not None:
-                    progress_callback(completed / total, f"Prepared crop {completed} of {total}")
+    try:
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
+            pending = {
+                executor.submit(prepare_crop_item, index, crop, rgba_bytes, width, height, background_rgba, worker_settings)
+                for index, crop in enumerate(crops)
+            }
+            while pending:
+                done, pending = wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                if not done:
+                    if progress_callback is not None:
+                        progress_callback(completed / total, f"Preparing crops... {completed} of {total} complete")
+                    continue
+                for future in done:
+                    item = future.result()
+                    items[item["index"]] = item
+                    completed += 1
+                    if progress_callback is not None:
+                        progress_callback(completed / total, f"Prepared crop {completed} of {total}")
+    except Exception as exc:
+        if progress_callback is not None:
+            progress_callback(0.0, f"Process workers unavailable; falling back to sequential processing ({exc})")
+        return _prepare_crop_items_sequential(crops, rgba_bytes, width, height, background_rgba, worker_settings, progress_callback)
 
     return items
 
@@ -859,5 +845,6 @@ class DivideScannedImages(Gimp.PlugIn):
 
         return None
 
-
-Gimp.main(DivideScannedImages.__gtype__, sys.argv)
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    Gimp.main(DivideScannedImages.__gtype__, sys.argv)
