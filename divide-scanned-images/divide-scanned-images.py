@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED
 from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
 import multiprocessing
 import os
@@ -44,16 +43,12 @@ from divide_scanned_images_core import (  # noqa: E402
     rotate_rgba_clockwise,
     sample_background,
 )
-from divide_scanned_images_openai import enhance_png_with_openai  # noqa: E402
-from divide_scanned_images_openai import enhanced_output_path  # noqa: E402
-from divide_scanned_images_openai import rgba_to_png_bytes  # noqa: E402
 
 
 PLUGIN_BINARY = "divide-scanned-images"
 PROC_IMAGE = "python-fu-divide-scanned-images"
 PROC_BATCH = "python-fu-batch-divide-scanned-images"
 RGBA_FORMAT = "R'G'B'A u8"
-OPENAI_KEY_ENV = "OPENAI_API_KEY"
 
 CORNER_LABELS = {
     "top-left": "Top Left",
@@ -156,7 +151,6 @@ def _run_image_dialog(procedure, config, image, drawable):
         "deskew",
         "deskew-max-angle",
         "deskew-crop-padding",
-        "enhance-openai",
         "manual-background",
         "background-color",
         "sample-corner",
@@ -260,9 +254,6 @@ def _run_image_dialog(procedure, config, image, drawable):
     def update_keep_selection(button, item):
         item["keep"] = button.get_active()
 
-    def update_enhance_selection(button, item):
-        item["enhance"] = button.get_active()
-
     def render_preview():
         clear_preview()
         set_dialog_progress(0.0, "Detecting crops...")
@@ -311,7 +302,6 @@ def _run_image_dialog(procedure, config, image, drawable):
         )
         for item in preview_cache["items"]:
             item["keep"] = True
-            item["enhance"] = True
 
         for index, item in enumerate(preview_cache["items"]):
             crop_image = Gtk.Image()
@@ -322,14 +312,10 @@ def _run_image_dialog(procedure, config, image, drawable):
             keep_check = Gtk.CheckButton(label="Keep")
             keep_check.set_active(True)
             keep_check.connect("toggled", update_keep_selection, item)
-            enhance_check = Gtk.CheckButton(label="Enhance")
-            enhance_check.set_active(True)
-            enhance_check.connect("toggled", update_enhance_selection, item)
             update_preview_tile(item, crop_image, crop_label)
 
             control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             control_box.pack_start(keep_check, False, False, 0)
-            control_box.pack_start(enhance_check, False, False, 0)
             control_box.pack_start(rotate_button, False, False, 0)
 
             crop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -451,16 +437,6 @@ def _save_image(image, path):
     return result
 
 
-def _write_bytes(path, data):
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "wb") as handle:
-        handle.write(data)
-    if not os.path.exists(path):
-        raise RuntimeError(f"Could not create expected output file: {path}")
-
-
 def _gimp_progress(fraction, text=None):
     if text:
         try:
@@ -472,15 +448,6 @@ def _gimp_progress(fraction, text=None):
     except Exception:
         pass
     _process_ui_events()
-
-
-def _run_background_call(callable_obj, waiting_text):
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(callable_obj)
-        while not future.done():
-            _gimp_progress(0.0, waiting_text)
-            future.result(timeout=0.25) if future.done() else _process_ui_events()
-        return future.result()
 
 
 def _source_directory(image):
@@ -504,7 +471,6 @@ def _settings_from_config(config):
         "deskew": config.get_property("deskew"),
         "deskew_max_angle": config.get_property("deskew-max-angle"),
         "deskew_crop_padding": config.get_property("deskew-crop-padding"),
-        "enhance_openai": config.get_property("enhance-openai"),
         "manual_bg": config.get_property("manual-background"),
         "manual_bg_color": _rgba_from_gegl_color(config.get_property("background-color")),
         "corner": config.get_property("sample-corner"),
@@ -537,13 +503,6 @@ def _output_path(settings, source_image, ordinal):
     file_number = settings["start_number"] + ordinal
     filename = f"{settings['file_base']}{file_number:05d}{extension}"
     return os.path.join(target_dir, filename)
-
-
-def _openai_api_key():
-    key = os.environ.get(OPENAI_KEY_ENV, "")
-    if not key:
-        raise RuntimeError(f"{OPENAI_KEY_ENV} is not set. Disable OpenAI enhancement or set the environment variable.")
-    return key
 
 
 def _selected_layer(image, drawables=None):
@@ -658,7 +617,6 @@ def _save_crop_items(image, settings, crop_items):
     total = len(selected_items)
     if total == 0:
         raise RuntimeError("No preview crops are selected. Select at least one Keep checkbox before splitting.")
-    api_key = _openai_api_key() if settings["enhance_openai"] else None
     for index, item in enumerate(selected_items):
         _gimp_progress(index / max(1, total), f"Saving crop {index + 1} of {total}...")
         out_image, _out_layer = _new_crop_image(
@@ -672,28 +630,6 @@ def _save_crop_items(image, settings, crop_items):
         _gimp_progress(index / max(1, total), f"Saving {os.path.basename(path)}...")
         _save_image(out_image, path)
         outputs.append(path)
-        if api_key and item.get("enhance", True):
-            enhanced_path = enhanced_output_path(path)
-            _gimp_progress(
-                index / max(1, total),
-                f"Enhancing crop {index + 1} of {total} with OpenAI...",
-            )
-            png_bytes = rgba_to_png_bytes(item["bytes"], item["width"], item["height"])
-            enhanced_bytes = _run_background_call(
-                lambda data=png_bytes, width=item["width"], height=item["height"]: enhance_png_with_openai(
-                    data,
-                    api_key,
-                    width,
-                    height,
-                ),
-                f"Waiting for OpenAI enhancement {index + 1} of {total}...",
-            )
-            _write_bytes(enhanced_path, enhanced_bytes)
-            outputs.append(enhanced_path)
-            _gimp_progress(
-                (index + 0.5) / max(1, total),
-                f"Saved enhanced crop {index + 1} of {total}",
-            )
         if settings["auto_close"]:
             out_image.delete()
         else:
@@ -812,7 +748,6 @@ def batch_run(procedure, config, data):
                 "deskew",
                 "deskew-max-angle",
                 "deskew-crop-padding",
-                "enhance-openai",
                 "manual-background",
                 "background-color",
                 "sample-corner",
@@ -867,7 +802,6 @@ def _add_common_arguments(procedure, include_target=True):
     procedure.add_boolean_argument("deskew", "Deskew after splitting", None, False, flags)
     procedure.add_int_argument("deskew-max-angle", "Max deskew angle", None, 0, 45, 15, flags)
     procedure.add_int_argument("deskew-crop-padding", "Whitespace crop padding after deskew", None, 0, 1000, 0, flags)
-    procedure.add_boolean_argument("enhance-openai", "Enhance with OpenAI after split", None, False, flags)
     procedure.add_boolean_argument("manual-background", "Manually define background color", None, False, flags)
     procedure.add_color_argument("background-color", "Manual background color", None, False, Gegl.Color.new("white"), flags)
     procedure.add_choice_argument(

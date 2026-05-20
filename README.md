@@ -36,7 +36,7 @@ Filters > Divide Scanned Images...
 
 The interactive dialog includes a `Preview` button. Preview runs crop detection in memory and shows the detected split images in the same dialog without writing files. Each preview has a `Rotate` button; rotations are applied to the cached in-memory crop and are preserved when you click `Split`.
 
-Each preview tile is selected by default. Clear `Keep` to skip saving that crop. Clear `Enhance` to save the crop without sending that specific image to OpenAI when global OpenAI enhancement is enabled.
+Each preview tile is selected by default. Clear `Keep` to skip saving that crop.
 
 The batch entry is registered as:
 
@@ -53,7 +53,6 @@ Important options match the original plug-in:
 - `Deskew after splitting`: estimates each crop's skew from the detected photo footprint, rotates it in memory, samples the rotated crop corners as the local background, then trims leftover background whitespace.
 - `Max deskew angle`: ignores larger estimated angles so badly detected crops are not accidentally rotated.
 - `Whitespace crop padding after deskew`: keeps a small background border after deskew whitespace trimming.
-- `Enhance with OpenAI after split`: after `Split`, saves the normal crop and then saves an additional `-enhanced.png` copy generated with OpenAI's image edit endpoint. Preview does not call OpenAI.
 - `Save output to source directory`: uses the opened file's folder only when no target directory is selected.
 
 If the source image has not been saved and no target directory is selected, the plug-in stops and asks for an explicit output directory instead of silently writing into the process working folder.
@@ -61,14 +60,6 @@ If the source image has not been saved and no target directory is selected, the 
 The split/save operation reports progress through GIMP's progress UI. Preview generation also has a progress bar inside the dialog.
 
 After the source scan has been analyzed, crop extraction and in-memory post-processing run in a process pool with up to one fewer worker than the number of CPU cores. If the embedded GIMP Python runtime cannot spawn process workers, the plug-in falls back to sequential processing.
-
-OpenAI enhancement requires `OPENAI_API_KEY` in the environment visible to GIMP. It uses `gpt-image-1`, `quality=high`, and orientation-aware output size (`1024x1536` for portrait crops, `1536x1024` for landscape/square crops). The prompt is:
-
-```text
-Restore and improve this scanned vintage family photo while preserving the original composition, people, clothing, expressions, pose, and background. Correct fading, haze, low contrast, color cast, dust, scratches, and scan artifacts. Improve sharpness and facial clarity naturally, without making the image look modern, artificial, airbrushed, or like a new photo. Keep the film-photo look, realistic grain, realistic lighting, and the same framing. Do not change identities, do not add or remove people, do not invent new objects, and do not alter clothing designs or text except to make existing details clearer.
-```
-
-The OpenAI image edit API is generative, so exact preservation cannot be guaranteed. Keep the normal crop files as the source of truth.
 
 The optional external `deskew.exe` step from the original Script-Fu is not bundled here. This port focuses on GIMP 3's Python plug-in API and portable crop extraction.
 
