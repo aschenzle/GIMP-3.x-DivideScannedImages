@@ -12,11 +12,14 @@ import uuid
 import zlib
 
 OPENAI_IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits"
-OPENAI_IMAGE_MODEL = "gpt-image-1.5"
+OPENAI_IMAGE_MODEL = "gpt-image-1"
 ENHANCE_PROMPT = (
-    "Improve the definition/detail of this photo without creating anything new. "
-    "Preserve the original people, objects, composition, colors, identity, and historical/photo-real appearance. "
-    "Do not add, remove, replace, stylize, beautify, or invent details."
+    "Restore and improve this scanned vintage family photo while preserving the original composition, people, "
+    "clothing, expressions, pose, and background. Correct fading, haze, low contrast, color cast, dust, scratches, "
+    "and scan artifacts. Improve sharpness and facial clarity naturally, without making the image look modern, "
+    "artificial, airbrushed, or like a new photo. Keep the film-photo look, realistic grain, realistic lighting, "
+    "and the same framing. Do not change identities, do not add or remove people, do not invent new objects, "
+    "and do not alter clothing designs or text except to make existing details clearer."
 )
 
 
@@ -56,6 +59,12 @@ def enhanced_output_path(path: str) -> str:
     return f"{stem}-enhanced.png"
 
 
+def image_edit_size(width: int, height: int) -> str:
+    if width <= 0 or height <= 0:
+        raise ValueError("image dimensions must be positive")
+    return "1024x1536" if height > width else "1536x1024"
+
+
 def _multipart_body(fields: dict[str, str], files: list[tuple[str, str, str, bytes]]) -> tuple[bytes, str]:
     boundary = f"----DivideScannedImages{uuid.uuid4().hex}"
     boundary_bytes = boundary.encode("ascii")
@@ -82,6 +91,8 @@ def _multipart_body(fields: dict[str, str], files: list[tuple[str, str, str, byt
 def enhance_png_with_openai(
     png_bytes: bytes,
     api_key: str,
+    width: int,
+    height: int,
     prompt: str = ENHANCE_PROMPT,
     model: str = OPENAI_IMAGE_MODEL,
     timeout: int = 240,
@@ -92,7 +103,7 @@ def enhance_png_with_openai(
     fields = {
         "model": model,
         "prompt": prompt,
-        "size": "auto",
+        "size": image_edit_size(width, height),
         "quality": "high",
         "output_format": "png",
     }

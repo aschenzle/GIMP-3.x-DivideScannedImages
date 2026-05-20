@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "divide-scanned-images"))
 
 from divide_scanned_images_openai import enhanced_output_path  # noqa: E402
+from divide_scanned_images_openai import image_edit_size  # noqa: E402
+from divide_scanned_images_openai import OPENAI_IMAGE_MODEL  # noqa: E402
 from divide_scanned_images_openai import rgba_to_png_bytes  # noqa: E402
 from divide_scanned_images_openai import _multipart_body  # noqa: E402
 
@@ -26,15 +28,20 @@ class OpenAIHelperTests(unittest.TestCase):
 
     def test_multipart_body_contains_fields_and_file(self):
         body, content_type = _multipart_body(
-            {"model": "gpt-image-1.5", "prompt": "Improve detail"},
+            {"model": OPENAI_IMAGE_MODEL, "prompt": "Improve detail"},
             [("image", "crop.png", "image/png", b"png-bytes")],
         )
 
         self.assertIn("multipart/form-data; boundary=", content_type)
         self.assertIn(b'name="model"', body)
-        self.assertIn(b"gpt-image-1.5", body)
+        self.assertIn(b"gpt-image-1", body)
         self.assertIn(b'name="image"; filename="crop.png"', body)
         self.assertIn(b"png-bytes", body)
+
+    def test_image_edit_size_matches_orientation(self):
+        self.assertEqual(image_edit_size(1200, 800), "1536x1024")
+        self.assertEqual(image_edit_size(800, 1200), "1024x1536")
+        self.assertEqual(image_edit_size(1000, 1000), "1536x1024")
 
     def test_base64_shape_used_by_api_response(self):
         encoded = base64.b64encode(b"image").decode("ascii")

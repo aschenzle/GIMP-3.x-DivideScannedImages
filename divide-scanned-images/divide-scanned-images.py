@@ -650,7 +650,12 @@ def _save_crop_items(image, settings, crop_items):
             )
             png_bytes = rgba_to_png_bytes(item["bytes"], item["width"], item["height"])
             enhanced_bytes = _run_background_call(
-                lambda data=png_bytes: enhance_png_with_openai(data, api_key),
+                lambda data=png_bytes, width=item["width"], height=item["height"]: enhance_png_with_openai(
+                    data,
+                    api_key,
+                    width,
+                    height,
+                ),
                 f"Waiting for OpenAI enhancement {index + 1} of {total}...",
             )
             _write_bytes(enhanced_path, enhanced_bytes)
